@@ -6,7 +6,7 @@ It exists to make multi-step tool work explicit and composable without giving mo
 
 ## Status and requirements
 
-This repository is a private Git workspace, not a published npm package. It requires Node.js 24 or newer. The package manifests and root manifest are marked `private`, and `dist/` is generated and ignored. There is no npm publication workflow.
+This is a public source repository whose npm workspace packages are private and are not published. It requires Node.js 24 or newer. The package manifests and root manifest are marked `private`, and `dist/` is generated and ignored. Consumers use a pinned Git revision or include the source as a workspace dependency.
 
 ## Architecture
 
