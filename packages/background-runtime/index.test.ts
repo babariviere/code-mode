@@ -20,3 +20,27 @@ test("background runtime omits model policy and applies host role policy", async
 	);
 	assert.equal((result as { ok: boolean }).ok, true);
 });
+test("background bindings receive a frozen host policy, never model policy", async () => {
+	let observed: any;
+	let registered: any;
+	const hostPolicy = { allowedTools: ["workspace.read"] };
+	registerBackgroundRuntime({
+		rolePolicy: hostPolicy,
+		registerTool: (tool) => {
+			registered = tool;
+		},
+		codeModeBinding: {
+			execute: async (_input, _signal, policy) => {
+				observed = policy;
+				return { ok: true };
+			},
+		},
+	});
+	hostPolicy.allowedTools.push("sandbox.exec");
+	await registered.execute(
+		{ code: "return 1;", policy: { allowedTools: ["sandbox.exec"] } },
+		new AbortController().signal,
+	);
+	assert.equal(Object.isFrozen(observed), true);
+	assert.deepEqual(observed.allowedTools, ["workspace.read"]);
+});
