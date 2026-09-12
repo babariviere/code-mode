@@ -74,6 +74,7 @@ export class QuickJsRuntime {
 		let deadlineTimer: NodeJS.Timeout | undefined;
 		let active: any;
 		let executionGate: any;
+		let abortHandler: (() => void) | undefined;
 		const fail = (message: string): void => {
 			if (!controller.signal.aborted) controller.abort(new Error(message));
 		};
@@ -109,12 +110,12 @@ export class QuickJsRuntime {
 				rejectGate(`Execution timed out after ${options.timeoutMs}ms`);
 			}, options.timeoutMs);
 			deadlineTimer.unref?.();
-			const abort = (): void => {
+			abortHandler = (): void => {
 				cancelled = true;
 				fail("Execution cancelled");
 				rejectGate("Execution cancelled");
 			};
-			options.signal?.addEventListener("abort", abort, { once: true });
+			if (abortHandler) options.signal?.addEventListener("abort", abortHandler, { once: true });
 			const bridge = context.newFunction("__codeModeHostCall", (idHandle: any, inputHandle: any) => {
 				const id = context.getString(idHandle);
 				const input = context.dump(inputHandle);
@@ -249,6 +250,7 @@ export class QuickJsRuntime {
 				errorHandle.dispose();
 			}
 			executionGate?.dispose?.();
+			if (abortHandler) options.signal?.removeEventListener("abort", abortHandler);
 			active?.dispose?.();
 			runtime.executePendingJobs();
 			context.dispose();
