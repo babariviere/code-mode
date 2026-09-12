@@ -1,7 +1,7 @@
 {
 	"name": "@babariviere/code-mode",
 	"version": "0.1.0",
-	"private": true,
+	"private": false,
 	"type": "module",
 	"engines": {
 		"node": ">=24"
@@ -15,14 +15,26 @@
 		"typecheck": "tsc --noEmit -p tsconfig.json",
 		"test": "tsx --test 'packages/**/*.test.ts' 'apps/**/*.test.ts'",
 		"fmt": "biome format --write packages docs examples scripts package.json tsconfig.json biome.json",
-		"fmt:check": "biome format packages docs examples scripts package.json tsconfig.json biome.json"
+		"fmt:check": "biome format packages docs examples scripts package.json tsconfig.json biome.json",
+		"prepare": "npm run build"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.2.0",
 		"@types/node": "^24.0.0",
-		"quickjs-emscripten-core": "0.32.0",
+		"tsx": "^4.20.0"
+	},
+	"exports": {
+		".": {
+			"types": "./packages/core/dist/index.d.ts",
+			"import": "./packages/core/dist/index.js"
+		}
+	},
+	"files": [
+		"packages/core/dist"
+	],
+	"dependencies": {
 		"@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
-		"tsx": "^4.20.0",
-		"typescript": "^5.9.0"
+		"quickjs-emscripten-core": "0.32.0",
+		"typescript": "^6.0.3"
 	}
 }

@@ -11,7 +11,7 @@ import { mergeLimits, assertPolicy, restrictPolicy, immutablePolicy } from "./po
 import { createRegistry, type Registry } from "./registry.ts";
 import { BoundedState, parsePayloads } from "./state.ts";
 import { assertTypeChecks } from "./type-checker.ts";
-import { QuickJsRuntime, type HostCall } from "./quickjs-runtime.ts";
+import { QuickJsRuntime, type HostCall } from "./quickjs-runtime-simple.ts";
 import { formatError, formatResult } from "./format.ts";
 import { serializeBounded } from "./serialization.ts";
 
