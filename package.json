@@ -11,11 +11,11 @@
 		"apps/*"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.json",
+		"build": "tsc -p tsconfig.json && node scripts/rewrite-declaration-imports.mjs",
 		"typecheck": "tsc --noEmit -p tsconfig.json",
 		"test": "tsx --test 'packages/**/*.test.ts' 'apps/**/*.test.ts'",
-		"fmt": "biome format --write packages docs examples package.json tsconfig.json biome.json",
-		"fmt:check": "biome format packages docs examples package.json tsconfig.json biome.json"
+		"fmt": "biome format --write packages docs examples scripts package.json tsconfig.json biome.json",
+		"fmt:check": "biome format packages docs examples scripts package.json tsconfig.json biome.json"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.2.0",
