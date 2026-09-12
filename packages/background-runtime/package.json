@@ -3,6 +3,9 @@
 	"private": true,
 	"type": "module",
 	"exports": {
-		".": "./index.ts"
+		".": {
+			"types": "../../dist/packages/background-runtime/index.d.ts",
+			"import": "../../dist/packages/background-runtime/index.js"
+		}
 	}
 }

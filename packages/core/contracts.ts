@@ -54,6 +54,12 @@ export interface CodeModePolicy {
 export interface InvocationLimits {
 	readonly timeoutMs: number;
 	readonly maxToolCalls: number;
+	readonly maxDiscoveryCalls: number;
+	readonly maxCodeChars: number;
+	readonly maxPayloadBytes: number;
+	readonly maxDeclarationChars: number;
+	readonly maxToolInputBytes: number;
+	readonly maxToolOutputChars: number;
 	readonly maxOutputChars: number;
 	readonly maxLogChars: number;
 	readonly memoryLimitBytes: number;
@@ -152,4 +158,5 @@ export interface InvocationResult {
 	readonly state: Readonly<Record<string, JsonValue>>;
 	readonly toolCalls: number;
 	readonly durationMs: number;
+	readonly formatted?: string;
 }

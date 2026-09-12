@@ -7,13 +7,14 @@ import {
 	type JsonValue,
 	type ProgressEvent,
 } from "./contracts.ts";
-import { mergeLimits, assertPolicy } from "./policy.ts";
+import { mergeLimits, assertPolicy, restrictPolicy, immutablePolicy } from "./policy.ts";
 import { createRegistry, type Registry } from "./registry.ts";
 import { BoundedState, parsePayloads } from "./state.ts";
 import { assertTypeChecks } from "./type-checker.ts";
 import { QuickJsRuntime, type HostCall } from "./quickjs-runtime.ts";
+import { formatError, formatResult } from "./format.ts";
+import { serializeBounded } from "./serialization.ts";
 
-const jsonSize = (value: unknown): number => Buffer.byteLength(JSON.stringify(value) ?? "null", "utf8");
 const normalizeError = (error: unknown): CodeModeError => {
 	if (error instanceof CodeModeError) return error;
 	const message = error instanceof Error ? error.message : String(error);
@@ -37,16 +38,20 @@ const normalizeError = (error: unknown): CodeModeError => {
 export interface CodeModeExecutorOptions {
 	readonly registry: Registry;
 	readonly defaults?: Partial<import("./contracts.ts").InvocationLimits>;
+	/** Immutable host constraint. Model-supplied policy can only narrow this policy. */
+	readonly policy?: CodeModePolicy;
 	readonly onProgress?: (event: ProgressEvent) => void;
 }
 export class CodeModeExecutor {
 	readonly #registry: Registry;
 	readonly #defaults: Partial<import("./contracts.ts").InvocationLimits>;
+	readonly #policy: CodeModePolicy | undefined;
 	readonly #onProgress: ((event: ProgressEvent) => void) | undefined;
 	readonly #runtime = new QuickJsRuntime();
 	constructor(options: CodeModeExecutorOptions) {
 		this.#registry = options.registry;
 		this.#defaults = options.defaults ?? {};
+		this.#policy = options.policy ? immutablePolicy(options.policy) : undefined;
 		this.#onProgress = options.onProgress;
 	}
 	async execute(options: InvocationOptions): Promise<InvocationResult> {
@@ -60,14 +65,32 @@ export class CodeModeExecutor {
 		};
 		try {
 			if (!options.code.trim()) throw new CodeModeError({ code: "invalid-input", message: "code must not be empty" });
-			assertPolicy(options.policy ?? {});
+			const requestedPolicy = options.policy ?? {};
+			assertPolicy(requestedPolicy);
+			if (this.#policy) assertPolicy(this.#policy);
 			const limits = mergeLimits({ ...this.#defaults, ...options.limits });
-			const policy = options.policy ?? {};
+			const policy = this.#policy ? restrictPolicy(this.#policy, requestedPolicy) : requestedPolicy;
+			if (options.signal?.aborted) throw new CodeModeError({ code: "cancelled", message: "Execution cancelled" });
+			if (options.code.length > limits.maxCodeChars)
+				throw new CodeModeError({ code: "invalid-input", message: `code exceeds ${limits.maxCodeChars} characters` });
 			const payloads = parsePayloads(options.payloads);
+			serializeBounded(payloads, limits.maxPayloadBytes, "payloads");
 			const state = new BoundedState(options.state, limits.maxStateBytes);
 			const visible = this.#registry.discover(undefined, policy);
-			const js = assertTypeChecks(options.code, this.#registry.declarations(policy));
+			const declarations = this.#registry.declarations(policy);
+			if (declarations.length > limits.maxDeclarationChars)
+				throw new CodeModeError({
+					code: "invalid-input",
+					message: `declarations exceed ${limits.maxDeclarationChars} characters`,
+				});
+			const js = assertTypeChecks(options.code, declarations, options.signal);
+			if (js.javascript.length > limits.maxCodeChars)
+				throw new CodeModeError({
+					code: "invalid-input",
+					message: `transpiled code exceeds ${limits.maxCodeChars} characters`,
+				});
 			const calls = { count: 0 };
+			const discoveries = { count: 0 };
 			const toolContext = (
 				toolId: string,
 			): {
@@ -79,9 +102,21 @@ export class CodeModeExecutor {
 			emit({ type: "started", invocationId, at: Date.now() });
 			const runtime = await this.#runtime.execute(
 				js.javascript,
-				visible.map((tool) => tool.id.split(".")[0]!).filter((value, index, all) => all.indexOf(value) === index),
+				this.#registry.declarationBindings(policy),
 				async (id: string, input: unknown, signal: AbortSignal) => {
-					if (id === "tools.search")
+					if (++calls.count > Math.min(limits.maxToolCalls, policy.maxToolCalls ?? limits.maxToolCalls))
+						throw new CodeModeError({
+							code: "budget-exceeded",
+							message: `Tool-call budget exceeded (${limits.maxToolCalls})`,
+							toolId: id,
+						});
+					if (id === "tools.search") {
+						if (++discoveries.count > limits.maxDiscoveryCalls)
+							throw new CodeModeError({
+								code: "budget-exceeded",
+								message: `Discovery budget exceeded (${limits.maxDiscoveryCalls})`,
+								toolId: id,
+							});
 						return this.#registry.discover(
 							typeof input === "object" &&
 								input !== null &&
@@ -90,12 +125,8 @@ export class CodeModeExecutor {
 								: "",
 							policy,
 						);
-					if (++calls.count > Math.min(limits.maxToolCalls, policy.maxToolCalls ?? limits.maxToolCalls))
-						throw new CodeModeError({
-							code: "budget-exceeded",
-							message: `Tool-call budget exceeded (${limits.maxToolCalls})`,
-							toolId: id,
-						});
+					}
+					serializeBounded(input, limits.maxToolInputBytes, "tool input");
 					emit({ type: "tool-start", invocationId, toolId: id, at: Date.now() });
 					const at = Date.now();
 					try {
@@ -113,6 +144,7 @@ export class CodeModeExecutor {
 					payloads,
 					state: state.toJSON(),
 					...(options.signal ? { signal: options.signal } : {}),
+					maxToolOutputChars: limits.maxToolOutputChars,
 				},
 			);
 			logs.push(...runtime.logs);
@@ -129,8 +161,13 @@ export class CodeModeExecutor {
 					message: runtime.error ?? "Code mode failed",
 				});
 			}
-			if (jsonSize(runtime.value) > limits.maxOutputChars)
-				throw new CodeModeError({ code: "result-too-large", message: `Result exceeds ${limits.maxOutputChars} bytes` });
+			serializeBounded(runtime.value, limits.maxOutputChars, "result");
+			const formatted = formatResult(runtime.value, options.resultFormat);
+			if (formatted.length > limits.maxOutputChars)
+				throw new CodeModeError({
+					code: "result-too-large",
+					message: `Result exceeds ${limits.maxOutputChars} characters`,
+				});
 			for (const [key, value] of Object.entries(runtime.state)) state.set(key, value as JsonValue);
 			emit({ type: "completed", invocationId, at: Date.now() });
 			return {
@@ -141,6 +178,7 @@ export class CodeModeExecutor {
 				state: state.toJSON(),
 				toolCalls: calls.count,
 				durationMs: Date.now() - started,
+				formatted,
 			};
 		} catch (error) {
 			const normalized = normalizeError(error);
@@ -152,6 +190,7 @@ export class CodeModeExecutor {
 				state: {},
 				toolCalls: 0,
 				durationMs: Date.now() - started,
+				formatted: formatError(normalized.toJSON()),
 			};
 		}
 	}

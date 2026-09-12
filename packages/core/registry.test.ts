@@ -26,3 +26,23 @@ test("policy filters discovery and generated namespace declarations", () => {
 	assert.match(declarations, /function search/);
 	assert.doesNotMatch(declarations, /declare namespace extensions/);
 });
+test("registry validates inputs and outputs and uses bijective declaration bindings", async () => {
+	const registry = new Registry();
+	registry.register({
+		id: "repo.read-file",
+		description: "read",
+		inputSchema: { type: "object", required: ["value"], properties: { value: { type: "integer" } } },
+		outputSchema: { type: "object", required: ["value"], properties: { value: { type: "integer" } } },
+		effect: "none",
+		execute: async () => ({ value: 1 }),
+	});
+	assert.equal(registry.declarationBindings()[0]?.name, "read_file");
+	await assert.rejects(() => registry.invoke("repo.read-file", { value: 1.5 }, {} as never), /integer/);
+	const restricted = new Registry();
+	restricted.register({ ...tool("web.fetch"), capabilities: ["workspace.read", "github.write"] });
+	assert.equal(restricted.discover(undefined, { allowedCapabilities: ["workspace.read"] }).length, 0);
+});
+test("registry rejects normalized declaration collisions", () => {
+	const tools = [tool("web.a-b"), tool("web.a_b")];
+	assert.throws(() => generateDeclarations(tools), /collision/);
+});

@@ -7,3 +7,4 @@ export * from "./quickjs-runtime.ts";
 export * from "./executor.ts";
 
 export * from "./format.ts";
+export * from "./serialization.ts";

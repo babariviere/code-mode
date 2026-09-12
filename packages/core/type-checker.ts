@@ -34,7 +34,8 @@ export const transpile = (code: string): { javascript: string; sourceMap?: strin
 	const output = ts.transpileModule(`async function __codeModeMain(){\n${code}\n}`, options);
 	return { javascript: output.outputText, ...(output.sourceMapText ? { sourceMap: output.sourceMapText } : {}) };
 };
-export const typeCheck = (code: string, declarations: string): TypeCheckResult => {
+export const typeCheck = (code: string, declarations: string, signal?: AbortSignal): TypeCheckResult => {
+	if (signal?.aborted) throw new CodeModeError({ code: "cancelled", message: "Type checking cancelled" });
 	const file = "/__code_mode_guest.ts";
 	const decl = "/__code_mode_globals.d.ts";
 	let source = `async function __codeModeMain(){\n${code}\n}`;
@@ -49,6 +50,7 @@ export const typeCheck = (code: string, declarations: string): TypeCheckResult =
 				? ts.createSourceFile(decl, declarations, language, true)
 				: original.call(host, name, language, onError, newFile);
 	const program = ts.createProgram([file, decl], checkOptions, host);
+	if (signal?.aborted) throw new CodeModeError({ code: "cancelled", message: "Type checking cancelled" });
 	const diagnostics = [...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics()].filter(
 		(d) => d.file?.fileName === file,
 	);
@@ -63,11 +65,16 @@ export const typeCheck = (code: string, declarations: string): TypeCheckResult =
 		};
 	});
 	if (errors.length) return { errors };
+	if (signal?.aborted) throw new CodeModeError({ code: "cancelled", message: "Type checking cancelled" });
 	const output = transpile(code);
 	return { errors, ...output };
 };
-export const assertTypeChecks = (code: string, declarations: string): { javascript: string; sourceMap?: string } => {
-	const result = typeCheck(code, declarations);
+export const assertTypeChecks = (
+	code: string,
+	declarations: string,
+	signal?: AbortSignal,
+): { javascript: string; sourceMap?: string } => {
+	const result = typeCheck(code, declarations, signal);
 	if (result.errors.length)
 		throw new CodeModeError({
 			code: "type-error",

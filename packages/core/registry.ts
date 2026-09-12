@@ -16,6 +16,7 @@ export interface ToolRegistry {
 	get(id: string): CodeModeTool | undefined;
 	discover(query?: string, policy?: CodeModePolicy): readonly ToolSummary[];
 	declarations(policy?: CodeModePolicy): string;
+	declarationBindings(policy?: CodeModePolicy): readonly { namespace: string; name: string; id: string }[];
 	invoke(
 		id: string,
 		input: unknown,
@@ -32,8 +33,14 @@ const matches = (pattern: string, value: string): boolean => {
 export const validateSchema = (schema: JsonSchema, value: unknown, path = "input"): void => {
 	if (schema.type === "string" && typeof value !== "string")
 		throw new CodeModeError({ code: "invalid-input", message: `${path} must be a string` });
-	if ((schema.type === "number" || schema.type === "integer") && (typeof value !== "number" || !Number.isFinite(value)))
+	if (schema.type === "number" && (typeof value !== "number" || !Number.isFinite(value)))
 		throw new CodeModeError({ code: "invalid-input", message: `${path} must be a number` });
+	if (schema.type === "integer" && (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)))
+		throw new CodeModeError({ code: "invalid-input", message: `${path} must be an integer` });
+	if (schema.type === "null" && value !== null)
+		throw new CodeModeError({ code: "invalid-input", message: `${path} must be null` });
+	if (schema.enum && !schema.enum.some((item) => JSON.stringify(item) === JSON.stringify(value)))
+		throw new CodeModeError({ code: "invalid-input", message: `${path} must be an allowed value` });
 	if (schema.type === "boolean" && typeof value !== "boolean")
 		throw new CodeModeError({ code: "invalid-input", message: `${path} must be a boolean` });
 	if (schema.type === "array") {
@@ -64,7 +71,10 @@ export const toolAllowed = (tool: CodeModeTool, policy: CodeModePolicy = {}): bo
 	if (policy.deniedTools?.some((pattern) => matches(pattern, tool.id))) return false;
 	if (policy.allowedTools && !policy.allowedTools.some((pattern) => matches(pattern, tool.id))) return false;
 	if (policy.allowedEffects && !policy.allowedEffects.includes(tool.effect)) return false;
-	if (policy.allowedCapabilities && !(tool.capabilities ?? []).some((cap) => policy.allowedCapabilities?.includes(cap)))
+	if (
+		policy.allowedCapabilities &&
+		(!tool.capabilities?.length || !tool.capabilities.every((cap) => policy.allowedCapabilities!.includes(cap)))
+	)
 		return false;
 	return true;
 };
@@ -100,6 +110,12 @@ export const generateDeclarations = (tools: readonly CodeModeTool[], policy: Cod
 		const [namespace, ...parts] = tool.id.split(".");
 		if (!namespace || parts.length === 0) continue;
 		const functionName = parts.join("_").replace(/[^A-Za-z0-9_$]/g, "_");
+		const existing = namespaces.get(namespace) ?? [];
+		if (existing.some((line) => line.startsWith(`\tfunction ${functionName}(`)))
+			throw new CodeModeError({
+				code: "invalid-input",
+				message: `Tool declaration collision: ${namespace}.${functionName}`,
+			});
 		const input = schemaType(tool.inputSchema, aliases, `${namespace}${functionName}Input`);
 		const output = schemaType(tool.outputSchema, aliases, `${namespace}${functionName}Output`);
 		const lines = namespaces.get(namespace) ?? [];
@@ -110,7 +126,7 @@ export const generateDeclarations = (tools: readonly CodeModeTool[], policy: Cod
 	const ns = [...namespaces.entries()]
 		.map(([name, lines]) => `declare namespace ${name} {\n${lines.join("\n")}\n}`)
 		.join("\n\n");
-	return `${types}${types && ns ? "\n\n" : ""}${ns}\n\ndeclare const π: Readonly<Record<string, unknown>>;\ndeclare const τ: Record<string, unknown>;\ndeclare function print(...values: unknown[]): void;\n\ndeclare namespace tools {\n\tfunction search(input?: { query?: string }): Promise<ToolSummary[]>;\n}\n\ninterface ToolSummary { id: string; description: string; effect: string; capabilities: string[]; }`;
+	return `${types}${types && ns ? "\n\n" : ""}${ns}\n\ndeclare const π: Readonly<Record<string, unknown>>;\ndeclare const τ: Record<string, unknown>;\ndeclare function print(...values: unknown[]): void;\n\ndeclare namespace tools {\n\tfunction search(input?: { query?: string }): Promise<ToolSummary[]>;\n}\n\ninterface ToolSummary { id: string; description: string; effect: "none" | "workspace-write" | "external"; capabilities: string[]; inputSchema: unknown; outputSchema?: unknown; }`;
 };
 
 export class Registry implements ToolRegistry {
@@ -164,6 +180,14 @@ export class Registry implements ToolRegistry {
 	declarations(policy?: CodeModePolicy): string {
 		return generateDeclarations([...this.#tools.values()], policy);
 	}
+	declarationBindings(policy: CodeModePolicy = {}): readonly { namespace: string; name: string; id: string }[] {
+		return [...this.#tools.values()]
+			.filter((tool) => toolAllowed(tool, policy))
+			.map((tool) => {
+				const [namespace, ...parts] = tool.id.split(".");
+				return { namespace: namespace!, name: parts.join("_").replace(/[^A-Za-z0-9_$]/g, "_"), id: tool.id };
+			});
+	}
 	async invoke(
 		id: string,
 		input: unknown,
@@ -176,7 +200,10 @@ export class Registry implements ToolRegistry {
 		if (!toolAllowed(tool, policy))
 			throw new CodeModeError({ code: "policy-denied", message: `Policy denied tool: ${id}`, toolId: id });
 		try {
-			return await tool.execute(input, context);
+			validateSchema(tool.inputSchema, input);
+			const output = await tool.execute(input, context);
+			if (tool.outputSchema) validateSchema(tool.outputSchema, output, "output");
+			return output;
 		} catch (error) {
 			if (error instanceof CodeModeError) throw error;
 			throw new CodeModeError({

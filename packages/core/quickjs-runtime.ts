@@ -1,11 +1,13 @@
 import releaseSyncVariant from "@jitl/quickjs-singlefile-mjs-release-sync";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import { CodeModeError, type JsonValue } from "./contracts.ts";
+import { serializeBounded } from "./serialization.ts";
 
 export interface QuickJsOptions {
 	readonly timeoutMs: number;
 	readonly memoryLimitBytes: number;
 	readonly maxLogChars: number;
+	readonly maxToolOutputChars: number;
 	readonly payloads: Record<string, JsonValue | string>;
 	readonly state: Record<string, JsonValue>;
 	readonly signal?: AbortSignal;
@@ -22,9 +24,37 @@ export type HostCall = (id: string, input: unknown, signal: AbortSignal) => Prom
 type AnyContext = any;
 let modulePromise: Promise<any> | undefined;
 const getModule = (): Promise<any> => (modulePromise ??= newQuickJSWASMModuleFromVariant(releaseSyncVariant));
-const toJsonHandle = (context: AnyContext, value: unknown): any => {
-	const json = JSON.stringify(value === undefined ? null : value);
-	const text = context.newString(json === undefined ? "null" : json);
+const waitForModule = (signal: AbortSignal | undefined, timeoutMs: number): Promise<any> =>
+	new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			cleanup();
+			reject(new Error(`Execution timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+		timer.unref?.();
+		const onAbort = (): void => {
+			cleanup();
+			reject(new Error("Execution cancelled"));
+		};
+		const cleanup = (): void => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+		};
+		if (signal?.aborted) return onAbort();
+		signal?.addEventListener("abort", onAbort, { once: true });
+		getModule().then(
+			(value) => {
+				cleanup();
+				resolve(value);
+			},
+			(error) => {
+				cleanup();
+				reject(error);
+			},
+		);
+	});
+const toJsonHandle = (context: AnyContext, value: unknown, maxChars: number, label: string): any => {
+	const json = serializeBounded(value, maxChars, label);
+	const text = context.newString(json);
 	const jsonObject = context.getProp(context.global, "JSON");
 	const parse = context.getProp(jsonObject, "parse");
 	try {
@@ -40,8 +70,10 @@ const setup = `
  const bridge = globalThis.__codeModeHostCall; delete globalThis.__codeModeHostCall;
  const call = (id, input) => bridge(id, input ?? {});
  const namespaces = Object.create(null);
- globalThis.__codeModeNamespaces.forEach((namespace) => {
-   namespaces[namespace] = new Proxy({}, { get: (_target, property) => (...args) => call(namespace + "." + String(property), args[0] ?? {}) });
+ const bindings = Object.create(null);
+ globalThis.__codeModeBindings.forEach(({namespace, name, id}) => {
+   bindings[namespace + "." + name] = id;
+   if (!namespaces[namespace]) namespaces[namespace] = new Proxy({}, { get: (_target, property) => (...args) => call(bindings[namespace + "." + String(property)] ?? "", args[0] ?? {}) });
    globalThis[namespace] = namespaces[namespace];
  });
  globalThis.tools = Object.freeze({ search: (input) => call("tools.search", input ?? {}) });
@@ -54,13 +86,26 @@ const setup = `
 export class QuickJsRuntime {
 	async execute(
 		code: string,
-		namespaces: readonly string[],
+		bindings: readonly { namespace: string; name: string; id: string }[],
 		hostCall: HostCall,
 		options: QuickJsOptions,
 	): Promise<QuickJsResult> {
 		if (options.signal?.aborted)
 			return { value: undefined, state: options.state, logs: [], reason: "cancelled", error: "Execution cancelled" };
-		const quickjs = await getModule();
+		let quickjs: any;
+		try {
+			quickjs = await waitForModule(options.signal, options.timeoutMs);
+		} catch (error) {
+			return {
+				value: undefined,
+				state: options.state,
+				logs: [],
+				reason: options.signal?.aborted ? "cancelled" : "timed-out",
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+		if (options.signal?.aborted)
+			return { value: undefined, state: options.state, logs: [], reason: "cancelled", error: "Execution cancelled" };
 		const context: AnyContext = quickjs.newContext();
 		const runtime = context.runtime;
 		const logs: string[] = [];
@@ -123,13 +168,13 @@ export class QuickJsRuntime {
 				pending.add(promise);
 				void promise.settled.then(() => {
 					pending.delete(promise);
-					if (promise.alive !== false) promise.dispose();
+					if (!closing && promise.alive !== false) promise.dispose();
 				});
 				const task = (async () => {
 					try {
 						const value = await hostCall(id, input, controller.signal);
 						if (!closing && promise.alive !== false) {
-							const handle = toJsonHandle(context, value);
+							const handle = toJsonHandle(context, value, options.maxToolOutputChars, "tool output");
 							promise.resolve(handle);
 							handle.dispose();
 						}
@@ -150,7 +195,10 @@ export class QuickJsRuntime {
 					}
 				})();
 				tasks.add(task);
-				void task.finally(() => tasks.delete(task));
+				task.then(
+					() => tasks.delete(task),
+					() => tasks.delete(task),
+				);
 				return promise.handle;
 			});
 			context.setProp(context.global, "__codeModeHostCall", bridge);
@@ -165,11 +213,11 @@ export class QuickJsRuntime {
 			context.setProp(context.global, "print", print);
 			print.dispose();
 			for (const [name, value] of [
-				["__codeModeNamespaces", namespaces],
+				["__codeModeBindings", bindings],
 				["__codeModePayloads", options.payloads],
 				["__codeModeState", options.state],
 			] as const) {
-				const handle = toJsonHandle(context, value);
+				const handle = toJsonHandle(context, value, options.maxToolOutputChars, name);
 				context.setProp(context.global, name, handle);
 				handle.dispose();
 			}
@@ -190,13 +238,17 @@ export class QuickJsRuntime {
 				return { value: undefined, state: options.state, logs, reason: "runtime-error", error: message };
 			}
 			active = evaluated.value;
-			runtime.executePendingJobs();
+			// Promise.race and an async function can require more than one QuickJS job turn
+			// when the program has no host call to drive the bridge.
+			for (let i = 0; i < 100; i++) runtime.executePendingJobs();
 			let fallbackTimer: NodeJS.Timeout | undefined;
 			const fallback = new Promise<never>((_, reject) => {
 				fallbackTimer = setTimeout(() => reject(new Error("deadline")), options.timeoutMs + 10);
 				fallbackTimer.unref?.();
 			});
-			const resolution = await Promise.race([context.resolvePromise(active), fallback]);
+			const resolved = context.resolvePromise(active);
+			for (let i = 0; i < 100; i++) runtime.executePendingJobs();
+			const resolution = await Promise.race([resolved, fallback]);
 			if (fallbackTimer) clearTimeout(fallbackTimer);
 			if (resolution.error) {
 				const dumped = context.dump(resolution.error);
@@ -243,7 +295,6 @@ export class QuickJsRuntime {
 					promise.dispose();
 				}
 			}
-			await Promise.allSettled([...tasks]);
 			if (executionGate?.alive !== false) {
 				const errorHandle = context.newError("Execution ended");
 				executionGate.reject(errorHandle);
@@ -252,7 +303,7 @@ export class QuickJsRuntime {
 			executionGate?.dispose?.();
 			if (abortHandler) options.signal?.removeEventListener("abort", abortHandler);
 			active?.dispose?.();
-			runtime.executePendingJobs();
+			if (!closing) runtime.executePendingJobs();
 			context.dispose();
 		}
 	}

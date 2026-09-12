@@ -1,3 +1,4 @@
+import { resolve, relative } from "node:path";
 import { createRegistry, type CodeModeTool, type Registry } from "../core/index.ts";
 
 export interface SandboxRequest {
@@ -24,23 +25,74 @@ export interface AgentOsBindings {
 	readonly webSearch?: (input: unknown, signal: AbortSignal) => Promise<unknown>;
 	readonly webFetch?: (input: unknown, signal: AbortSignal) => Promise<unknown>;
 }
+export interface AgentOsSecurityOptions {
+	readonly workspaceRoot?: string;
+	readonly maxPathChars?: number;
+	readonly maxWorkspaceContentChars?: number;
+	readonly maxSandboxTimeoutMs?: number;
+	readonly maxArgChars?: number;
+	readonly maxOutputChars?: number;
+	readonly maxEvidenceChars?: number;
+	readonly allowedEnv?: readonly string[];
+}
 const schema = (properties: Record<string, unknown>, required: readonly string[] = []): Record<string, unknown> => ({
 	type: "object",
 	properties,
 	required,
 	additionalProperties: false,
 });
-export const createAgentOsRegistry = (bindings: AgentOsBindings): Registry => {
+const credentialName = (name: string): boolean =>
+	/(TOKEN|SECRET|PASSWORD|PRIVATE|CREDENTIAL|API_KEY|ACCESS_KEY|AWS_)/i.test(name);
+
+export const createAgentOsRegistry = (bindings: AgentOsBindings, options: AgentOsSecurityOptions = {}): Registry => {
 	const registry = createRegistry();
-	const read: CodeModeTool = {
+	const root = resolve(options.workspaceRoot ?? "/workspace");
+	const maxPathChars = options.maxPathChars ?? 4_096;
+	const maxWorkspaceContentChars = options.maxWorkspaceContentChars ?? 512_000;
+	const maxSandboxTimeoutMs = options.maxSandboxTimeoutMs ?? 120_000;
+	const maxArgChars = options.maxArgChars ?? 16_384;
+	const maxOutputChars = options.maxOutputChars ?? 512_000;
+	const maxEvidenceChars = options.maxEvidenceChars ?? 512_000;
+	const allowedEnv = new Set(options.allowedEnv ?? []);
+	const workspacePath = (value: string): string => {
+		if (value.length > maxPathChars || value.includes("\0")) throw new Error("invalid workspace path");
+		const path = resolve(root, value);
+		if (
+			path !== root &&
+			relative(root, path)
+				.split("/")
+				.some((part) => part === "..")
+		)
+			throw new Error("path escapes workspace");
+		return path;
+	};
+	const boundedText = (value: string, max: number, label: string): string => {
+		if (value.length > max) throw new Error(`${label} exceeds ${max} characters`);
+		return value;
+	};
+	const boundedEnv = (
+		env: Readonly<Record<string, string>> | undefined,
+	): Readonly<Record<string, string>> | undefined => {
+		if (!env) return undefined;
+		for (const [name, value] of Object.entries(env)) {
+			if (!allowedEnv.has(name) || credentialName(name) || value.includes("\0"))
+				throw new Error(`environment variable is not allowed: ${name}`);
+		}
+		return env;
+	};
+	registry.register({
 		id: "workspace.read",
 		description: "Read a file from the session virtual workspace",
 		inputSchema: schema({ path: { type: "string" } }, ["path"]),
 		effect: "none",
 		capabilities: ["workspace.read"],
-		execute: async (input, context) => bindings.workspaceRead(String((input as { path: string }).path), context.signal),
-	};
-	registry.register(read);
+		execute: async (input, context) =>
+			boundedText(
+				await bindings.workspaceRead(workspacePath((input as { path: string }).path), context.signal),
+				maxWorkspaceContentChars,
+				"workspace content",
+			),
+	} satisfies CodeModeTool);
 	if (bindings.workspaceWrite)
 		registry.register({
 			id: "workspace.write",
@@ -48,12 +100,14 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings): Registry => {
 			inputSchema: schema({ path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
 			effect: "workspace-write",
 			capabilities: ["workspace.write"],
-			execute: (input, context) =>
-				bindings.workspaceWrite!(
-					(input as { path: string }).path,
-					(input as { content: string }).content,
+			execute: (input, context) => {
+				const request = input as { path: string; content: string };
+				return bindings.workspaceWrite!(
+					workspacePath(request.path),
+					boundedText(request.content, maxWorkspaceContentChars, "workspace content"),
 					context.signal,
-				),
+				);
+			},
 		});
 	registry.register({
 		id: "sandbox.exec",
@@ -62,7 +116,7 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings): Registry => {
 			{
 				argv: { type: "array", items: { type: "string" } },
 				cwd: { type: "string" },
-				timeoutMs: { type: "number" },
+				timeoutMs: { type: "integer" },
 				env: { type: "object" },
 			},
 			["argv", "cwd"],
@@ -71,9 +125,24 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings): Registry => {
 		capabilities: ["sandbox.exec"],
 		execute: (input, context) => {
 			const request = input as SandboxRequest;
-			if (request.argv.length === 0 || request.argv.some((arg) => arg.includes("\u0000")))
-				throw new Error("sandbox argv must be non-empty and NUL-free");
-			return bindings.sandboxExec(request, context.signal);
+			if (
+				request.argv.length === 0 ||
+				request.argv.length > 128 ||
+				request.argv.some((arg) => arg.includes("\0") || arg.length > maxArgChars)
+			)
+				throw new Error("sandbox argv is invalid");
+			const cwd = workspacePath(request.cwd);
+			const timeoutMs = request.timeoutMs ?? maxSandboxTimeoutMs;
+			if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > maxSandboxTimeoutMs)
+				throw new Error("sandbox timeout exceeds policy");
+			const env = boundedEnv(request.env);
+			return bindings
+				.sandboxExec({ argv: [...request.argv], cwd, timeoutMs, ...(env ? { env } : {}) }, context.signal)
+				.then((result) => ({
+					...result,
+					stdout: boundedText(result.stdout, maxOutputChars, "sandbox stdout"),
+					stderr: boundedText(result.stderr, maxOutputChars, "sandbox stderr"),
+				}));
 		},
 	});
 	if (bindings.evidenceCreate)
@@ -83,11 +152,16 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings): Registry => {
 			inputSchema: schema({ name: { type: "string" }, content: { type: "string" } }, ["name", "content"]),
 			effect: "workspace-write",
 			capabilities: ["evidence.create"],
-			execute: (input, context) =>
-				bindings.evidenceCreate!(
-					{ name: String((input as { name: string }).name), content: String((input as { content: string }).content) },
+			execute: (input, context) => {
+				const value = input as { name: string; content: string };
+				return bindings.evidenceCreate!(
+					{
+						name: boundedText(value.name, 256, "evidence name"),
+						content: boundedText(value.content, maxEvidenceChars, "evidence content"),
+					},
 					context.signal,
-				),
+				);
+			},
 		});
 	if (bindings.webSearch)
 		registry.register({

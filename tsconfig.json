@@ -9,8 +9,12 @@
 		"verbatimModuleSyntax": true,
 		"isolatedModules": true,
 		"skipLibCheck": true,
-		"noEmit": true,
-		"allowImportingTsExtensions": true,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"outDir": "dist",
+		"rootDir": ".",
+		"rewriteRelativeImportExtensions": true,
 		"types": ["node"]
 	},
 	"include": ["packages/**/*.ts", "apps/**/*.ts", "examples/**/*.ts"]

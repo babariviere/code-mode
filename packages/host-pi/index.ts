@@ -38,8 +38,8 @@ export const createPiCodeModeHost = (options: PiHostOptions = {}): PiCodeModeHos
 		registry,
 		execute: (input, context) =>
 			import("../core/executor.ts").then(({ CodeModeExecutor }) =>
-				new CodeModeExecutor({ registry })
-					.execute(input as never)
+				new CodeModeExecutor({ registry, onProgress: context.reportProgress })
+					.execute({ ...(input as object), signal: context.signal, invocationId: context.invocationId } as never)
 					.then((result) => ({ ...result, invocationId: context.invocationId })),
 			),
 	};

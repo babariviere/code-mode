@@ -56,3 +56,60 @@ test("executor cancels runaway programs", async () => {
 	assert.equal(result.ok, false);
 	assert.ok(result.error?.code === "deadline-exceeded" || result.error?.code === "runtime-error");
 });
+test("executor bounds discovery, input, code, and tool output", async () => {
+	const output = await new CodeModeExecutor({ registry }).execute({
+		code: "return await tools.search({});",
+		limits: { maxDiscoveryCalls: 0 },
+	});
+	assert.equal(output.ok, false);
+	assert.equal(output.error?.code, "budget-exceeded");
+	const tooMuch = await new CodeModeExecutor({ registry }).execute({
+		code: "return π.big;",
+		payloads: { big: "x".repeat(20) },
+		limits: { maxPayloadBytes: 5 },
+	});
+	assert.equal(tooMuch.error?.code, "result-too-large");
+});
+test("host policy cannot be widened by invocation policy and formatting is applied", async () => {
+	const result = await new CodeModeExecutor({ registry, policy: { allowedTools: ["math.add"] } }).execute({
+		code: "return await math.add({a: 1, b: 2});",
+		policy: { allowedTools: ["web.*"] },
+		resultFormat: "text",
+	});
+	assert.equal(result.ok, false);
+	assert.equal(result.error?.code, "type-error");
+	assert.equal(typeof result.formatted, "string");
+});
+test("cancellation returns without awaiting a non-cooperative host tool", async () => {
+	const local = new Registry();
+	local.register({
+		id: "hang.run",
+		description: "hang",
+		inputSchema: { type: "object", required: ["value"], properties: { value: { type: "string" } } },
+		effect: "none",
+		execute: async () => await new Promise<never>(() => {}),
+	});
+	const controller = new AbortController();
+	const started = Date.now();
+	const pending = new CodeModeExecutor({ registry: local }).execute({
+		code: "return await hang.run({value: 'x'});",
+		signal: controller.signal,
+	});
+	setTimeout(() => controller.abort(), 10);
+	const result = await pending;
+	assert.equal(result.error?.code, "cancelled");
+	assert.ok(Date.now() - started < 500);
+});
+test("executor dispatches normalized declarations to the original tool id", async () => {
+	const local = new Registry();
+	local.register({
+		id: "repo.read-file",
+		description: "read",
+		inputSchema: { type: "object" },
+		effect: "none",
+		execute: async () => "ok",
+	});
+	const result = await new CodeModeExecutor({ registry: local }).execute({ code: "return await repo.read_file({});" });
+	assert.equal(result.ok, true);
+	assert.equal(result.value, "ok");
+});
