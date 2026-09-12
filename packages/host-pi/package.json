@@ -4,8 +4,8 @@
 	"type": "module",
 	"exports": {
 		".": {
-			"types": "../../dist/packages/host-pi/index.d.ts",
-			"import": "../../dist/packages/host-pi/index.js"
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
 		}
 	}
 }

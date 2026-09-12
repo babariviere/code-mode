@@ -4,8 +4,8 @@
 	"type": "module",
 	"exports": {
 		".": {
-			"types": "../../dist/packages/host-agentos/index.d.ts",
-			"import": "../../dist/packages/host-agentos/index.js"
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
 		}
 	}
 }

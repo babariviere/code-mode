@@ -11,7 +11,7 @@
 		"apps/*"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.json && node scripts/rewrite-declaration-imports.mjs",
+		"build": "tsc -p tsconfig.json && node scripts/rewrite-declaration-imports.mjs && node scripts/emit-package-artifacts.mjs",
 		"typecheck": "tsc --noEmit -p tsconfig.json",
 		"test": "tsx --test 'packages/**/*.test.ts' 'apps/**/*.test.ts'",
 		"fmt": "biome format --write packages docs examples scripts package.json tsconfig.json biome.json",

@@ -1,4 +1,5 @@
-import { resolve, relative } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
 import { createRegistry, type CodeModeTool, type Registry } from "../core/index.ts";
 
 export interface SandboxRequest {
@@ -54,6 +55,58 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings, options: AgentO
 	const maxOutputChars = options.maxOutputChars ?? 512_000;
 	const maxEvidenceChars = options.maxEvidenceChars ?? 512_000;
 	const allowedEnv = new Set(options.allowedEnv ?? []);
+	const isWithinRoot = (workspaceRoot: string, path: string): boolean => {
+		const distance = relative(workspaceRoot, path);
+		return distance === "" || (!distance.startsWith("..") && !isAbsolute(distance));
+	};
+	const realpathOrExistingAncestor = async (path: string): Promise<string> => {
+		let candidate = path;
+		while (true) {
+			try {
+				return await realpath(candidate);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				const parent = resolve(candidate, "..");
+				if (parent === candidate) throw error;
+				candidate = parent;
+			}
+		}
+	};
+	const confinedWorkspacePath = async (value: string): Promise<string> => {
+		const path = workspacePath(value);
+		try {
+			const realRoot = await realpath(root);
+			let current = path;
+			while (current !== root && isWithinRoot(root, current)) {
+				let stats;
+				try {
+					stats = await lstat(current);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					current = resolve(current, "..");
+					continue;
+				}
+				if (stats.isSymbolicLink()) {
+					let realPath: string;
+					try {
+						realPath = await realpath(current);
+					} catch {
+						throw new Error("path escapes workspace");
+					}
+					if (!isWithinRoot(realRoot, realPath)) throw new Error("path escapes workspace");
+				}
+				current = resolve(current, "..");
+			}
+			const realPath = await realpathOrExistingAncestor(path);
+			if (!isWithinRoot(realRoot, realPath)) throw new Error("path escapes workspace");
+			return path;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return path;
+			throw error instanceof Error && error.message === "path escapes workspace"
+				? error
+				: new Error("path is not safely confined to workspace");
+		}
+	};
 	const workspacePath = (value: string): string => {
 		if (value.length > maxPathChars || value.includes("\0")) throw new Error("invalid workspace path");
 		const path = resolve(root, value);
@@ -88,7 +141,7 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings, options: AgentO
 		capabilities: ["workspace.read"],
 		execute: async (input, context) =>
 			boundedText(
-				await bindings.workspaceRead(workspacePath((input as { path: string }).path), context.signal),
+				await bindings.workspaceRead(await confinedWorkspacePath((input as { path: string }).path), context.signal),
 				maxWorkspaceContentChars,
 				"workspace content",
 			),
@@ -102,10 +155,12 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings, options: AgentO
 			capabilities: ["workspace.write"],
 			execute: (input, context) => {
 				const request = input as { path: string; content: string };
-				return bindings.workspaceWrite!(
-					workspacePath(request.path),
-					boundedText(request.content, maxWorkspaceContentChars, "workspace content"),
-					context.signal,
+				return confinedWorkspacePath(request.path).then((path) =>
+					bindings.workspaceWrite!(
+						path,
+						boundedText(request.content, maxWorkspaceContentChars, "workspace content"),
+						context.signal,
+					),
 				);
 			},
 		});
@@ -131,13 +186,18 @@ export const createAgentOsRegistry = (bindings: AgentOsBindings, options: AgentO
 				request.argv.some((arg) => arg.includes("\0") || arg.length > maxArgChars)
 			)
 				throw new Error("sandbox argv is invalid");
-			const cwd = workspacePath(request.cwd);
+			const cwd = confinedWorkspacePath(request.cwd);
 			const timeoutMs = request.timeoutMs ?? maxSandboxTimeoutMs;
 			if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > maxSandboxTimeoutMs)
 				throw new Error("sandbox timeout exceeds policy");
 			const env = boundedEnv(request.env);
-			return bindings
-				.sandboxExec({ argv: [...request.argv], cwd, timeoutMs, ...(env ? { env } : {}) }, context.signal)
+			return cwd
+				.then((safeCwd) =>
+					bindings.sandboxExec(
+						{ argv: [...request.argv], cwd: safeCwd, timeoutMs, ...(env ? { env } : {}) },
+						context.signal,
+					),
+				)
 				.then((result) => ({
 					...result,
 					stdout: boundedText(result.stdout, maxOutputChars, "sandbox stdout"),
