@@ -4,6 +4,8 @@
 
 Hosts register capability-oriented IDs (`web.search`, `sandbox.exec`, `workspace.read`) before execution. `tools.search` is a built-in discovery operation. Registration validates IDs and capabilities, and policies filter both generated declarations and runtime dispatch.
 
+Interactive Pi also uses the core `HostBridgeRuntime` with a trusted host bootstrap. The engine is independent of Pi tool names and packages; `host-pi` owns the guest API compatibility layer. The surrounding interactive host preserves its live provider registry, lazy MCP dispatch, tool hooks, session store, and budgets. This avoids narrowing interactive capabilities to a static snapshot of the standalone registry.
+
 ## Isolation and budgets
 
 QuickJS has a per-invocation memory limit, stack limit, interrupt deadline, cancellation signal, bounded output and logs, bounded state, and tool-call budget. Host calls cross a JSON boundary. A host must still enforce path, network, credential, and sandbox policy in its binding implementation.

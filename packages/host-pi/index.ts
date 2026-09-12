@@ -1,6 +1,9 @@
-import { createRegistry, type CodeModeTool, type Registry } from "../core/index.ts";
+import { createRegistry, type CodeModeTool, type Registry, type ToolId } from "../core/index.ts";
+export * from "./interactive-runtime.ts";
 
 export interface PiTool<TInput = unknown, TOutput = unknown> {
+	/** Explicit capability ID for selected tools, for example web.search. */
+	readonly id?: ToolId;
 	readonly name: string;
 	readonly description: string;
 	readonly inputSchema: Record<string, unknown>;
@@ -16,7 +19,7 @@ export interface PiHostOptions {
 export const createPiRegistry = (options: PiHostOptions = {}): Registry => {
 	const registry = createRegistry();
 	for (const tool of [...(options.coreTools ?? []), ...(options.selectedTools ?? [])]) {
-		const id = `pi.${tool.name}` as `${string}.${string}`;
+		const id = tool.id ?? (`pi.${tool.name}` as ToolId);
 		registry.register({
 			id,
 			description: tool.description,
