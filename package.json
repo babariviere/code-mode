@@ -1,7 +1,7 @@
 {
 	"name": "@babariviere/code-mode",
 	"version": "0.1.0",
-	"private": false,
+	"private": true,
 	"type": "module",
 	"engines": {
 		"node": ">=24"
@@ -16,7 +16,8 @@
 		"test": "tsx --test 'packages/**/*.test.ts' 'apps/**/*.test.ts'",
 		"fmt": "biome format --write packages docs examples scripts package.json tsconfig.json biome.json",
 		"fmt:check": "biome format packages docs examples scripts package.json tsconfig.json biome.json",
-		"prepare": "npm run build"
+		"prepare": "npm run build",
+		"test:package": "npm run build && node scripts/check-package.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.2.0",
@@ -25,12 +26,28 @@
 	},
 	"exports": {
 		".": {
-			"types": "./packages/core/dist/index.d.ts",
-			"import": "./packages/core/dist/index.js"
+			"types": "./dist/packages/core/index.d.ts",
+			"import": "./dist/packages/core/index.js"
+		},
+		"./host-pi": {
+			"types": "./dist/packages/host-pi/index.d.ts",
+			"import": "./dist/packages/host-pi/index.js"
+		},
+		"./host-agentos": {
+			"types": "./dist/packages/host-agentos/index.d.ts",
+			"import": "./dist/packages/host-agentos/index.js"
+		},
+		"./background-runtime": {
+			"types": "./dist/packages/background-runtime/index.d.ts",
+			"import": "./dist/packages/background-runtime/index.js"
+		},
+		"./protocol": {
+			"types": "./dist/packages/protocol/index.d.ts",
+			"import": "./dist/packages/protocol/index.js"
 		}
 	},
 	"files": [
-		"packages/core/dist"
+		"dist/packages"
 	],
 	"dependencies": {
 		"@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",

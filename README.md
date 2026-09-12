@@ -114,7 +114,9 @@ These controls do not make arbitrary host callbacks safe by themselves. Do not r
 
 ## Pi integration
 
-`createPiRegistry()` accepts two explicit callback lists, `coreTools` and `selectedTools`. Each Pi tool is adapted to `pi.<name>`, preserving its description, schema, optional effect, and capabilities. Nothing is discovered implicitly, and the package does not load the Pi SDK, ACP, or extension directory. `createPiCodeModeHost()` exposes a `code_mode`-compatible execute callback and forwards progress to the enclosing tool context.
+`createPiRegistry()` accepts two explicit callback lists, `coreTools` and `selectedTools`. A callback may supply an explicit `id`, such as `web.search` or `web.fetch`; otherwise its ID is `pi.<name>`. Description, schema, effect, and capabilities are preserved. Nothing is discovered implicitly, and the package does not load the Pi SDK, ACP, or extension directory. `createPiCodeModeHost()` exposes a `code_mode`-compatible execute callback and forwards progress to the enclosing tool context.
+
+The interactive Pi extension uses `PiQuickJsRuntime` from `@babariviere/code-mode/host-pi` over core's `HostBridgeRuntime`. The shared engine owns QuickJS execution, cancellation, deadlines, payload transfer, polyfills, and source maps. Only the Pi adapter owns the trusted guest bootstrap (`pi`, MCP, subagents, async `τ`, discovery, and `mapLimit`). Its host callback remains responsible for tool registration, authorization, schema validation, call budgets, state, and progress. The allowlisted process snapshot and selected capability namespaces are trusted host options, never model inputs. The standalone `CodeModeExecutor` and `QuickJsRuntime` APIs remain unchanged.
 
 The adapter is intentionally not a Pi extension loader. The surrounding Pi integration must select trusted callbacks and decide which policy to pass. For an AgentOS Pi extension, use `registerBackgroundRuntime()` instead of registering a collection of Pi tools directly.
 
@@ -150,7 +152,7 @@ npm exec -- tsx examples/agentos.ts
 
 `npm run build` type-checks and emits JavaScript, declarations, and source maps under `dist/`, then copies the package artifacts into each package's ignored `dist/` directory. The package `exports` point at those generated files, so build before importing a package through its workspace export. For development, the examples and tests import source files directly and can be run with `tsx` as above.
 
-The package manifests are private and currently omit a publication/release contract. A separate application should consume a checked-out revision through its workspace or a reviewed local build, with the root development dependencies available; do not assume that copying one package directory alone provides the QuickJS runtime dependencies. Pin the Git revision in deployment automation and review generated artifacts before shipping them.
+All package manifests remain private. Applications can install the root package from a full Git commit pin. Git installation runs `prepare` to build the package; runtime dependencies are regular dependencies, so production installs do not depend on development tooling after installation. Root exports include `@babariviere/code-mode` (core) and the `/host-pi`, `/host-agentos`, `/background-runtime`, and `/protocol` subpaths. They resolve within the packaged `dist/packages` tree, without unpublished sibling package dependencies or a neighboring checkout. No npm publication is required. Pin the Git revision and review generated artifacts before shipping them.
 
 ## Development commands
 
