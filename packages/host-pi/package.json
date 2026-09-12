@@ -1,0 +1,8 @@
+{
+	"name": "@babariviere/code-mode-host-pi",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./index.ts"
+	}
+}

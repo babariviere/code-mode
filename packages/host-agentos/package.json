@@ -1,0 +1,8 @@
+{
+	"name": "@babariviere/code-mode-host-agentos",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./index.ts"
+	}
+}
