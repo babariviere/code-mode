@@ -1,0 +1,28 @@
+{
+	"name": "@babariviere/code-mode",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"workspaces": [
+		"packages/*",
+		"apps/*"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"typecheck": "tsc --noEmit -p tsconfig.json",
+		"test": "tsx --test 'packages/**/*.test.ts' 'apps/**/*.test.ts'",
+		"fmt": "biome format --write .",
+		"fmt:check": "biome format ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.2.0",
+		"@types/node": "^24.0.0",
+		"quickjs-emscripten-core": "0.32.0",
+		"@jitl/quickjs-singlefile-mjs-release-sync": "0.32.0",
+		"tsx": "^4.20.0",
+		"typescript": "^5.9.0"
+	}
+}
